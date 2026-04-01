@@ -59,18 +59,91 @@ All accept a list of names and return results for each.
 
 ### `brand_search_preferences`
 
-Manage all preferences — service config, domain tiers, and creative style.
-Call with no args to view current settings. Each parameter updates only its
-section; omitted sections are unchanged.
+Manage search config and creative preferences — services, domain tiers,
+keywords, and naming guidelines. Call with no args to view current settings.
 
 ```
 brand_search_preferences()                    # view all
 brand_search_preferences(services={"npm": false, "docker_hub": false})
 brand_search_preferences(domain_tiers={"critical": [".com", ".dev"]})
 brand_search_preferences(add_keywords=["fitness", "minimal"])
-brand_search_preferences(add_liked_brands=["Stripe", "Notion"])
-brand_search_preferences(add_guidelines=["short Spanish words", "must work as CLI command"])
-brand_search_preferences(remove_keywords=["fitness"])
+brand_search_preferences(add_guidelines=["must work as CLI command"])
+```
+
+### Brand management tools
+
+Save, annotate, and query brand name candidates across sessions.
+
+#### `add_brand`
+
+Save a brand with optional availability data, tags, and notes.
+
+```
+add_brand(name="echoark")
+add_brand(
+    name="echoark",
+    availability=[
+        {"type": "github", "status": "available"},
+        {"type": ".com", "status": "unavailable"},
+        {"type": ".io", "status": "available"}
+    ],
+    tags=["dev-tools", "finalist"],
+    notes="Ark = vessel/preservation. No .com but echoark.io works."
+)
+```
+
+#### `update_brand`
+
+Modify tags, notes, or comments on an existing brand.
+
+```
+update_brand(name="echoark", add_tags=["favorite"])
+update_brand(name="echoark", notes="Updated: confirmed .io is available")
+update_brand(name="echoark", add_comments=["User loves the ark metaphor"])
+```
+
+#### `update_brand_availability`
+
+Set or merge availability data on a brand. Merge by default; pass
+`reset=True` to replace all existing entries.
+
+```
+update_brand_availability(
+    name="echoark",
+    entries=[{"type": ".ai", "status": "available"}]
+)
+update_brand_availability(
+    name="echoark",
+    entries=[{"type": "github", "status": "available"}, ...],
+    reset=True
+)
+```
+
+Availability uses three-state semantics per namespace:
+- `"available"` — confirmed open
+- `"unavailable"` — confirmed taken
+- `"unknown"` — checked but ambiguous (e.g. whois timeout)
+- Not in list — never checked (distinct from all three above)
+
+#### `list_brands`
+
+Query saved brands with optional filters (AND logic).
+
+```
+list_brands()                              # all brands
+list_brands(tag="finalist")                # by tag
+list_brands(available_on="github")         # available on a namespace
+list_brands(unavailable_on=".com")         # taken on a namespace
+list_brands(unchecked_on="pypi")           # needs follow-up check
+list_brands(search="echo")                 # name substring match
+```
+
+#### `remove_brand`
+
+Delete brands by name.
+
+```
+remove_brand(names=["oldname", "badidea"])
 ```
 
 ## Design: orchestrator vs. individual tools
@@ -117,10 +190,12 @@ updates.
   informational, or ignore. Ignored extensions are never checked.
 - **Keywords**: terms meaningful to you for brainstorming (e.g. "fitness",
   "cloud", "personal tools")
-- **Liked brands**: names you admire as style references (e.g. "Stripe",
-  "Rye", "Bun")
-- **Guidelines**: naming rules in your own words (e.g. "short Spanish words",
-  "no weird misspellings", "must work as a CLI command")
+- **Guidelines**: naming rules in your own words (e.g. "check both
+  hyphenated and unhyphenated versions", "must work as a CLI command")
+- **Liked brands**: saved as rich objects with name, availability (three-state
+  per namespace), tags (free-form labels), notes, and timestamped comments.
+  Managed via `add_brand`, `update_brand`, `update_brand_availability`,
+  `remove_brand`, and `list_brands`.
 
 ## Prerequisites
 
