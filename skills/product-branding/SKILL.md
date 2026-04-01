@@ -33,12 +33,20 @@ round-trips):
   faster because you're not waiting for unrelated services. You can also call
   several in parallel for a single name to trickle results to the user.
 
-- **`brand_search_preferences`** — manages all preferences: which services and
-  domain tiers to check, plus creative preferences (keywords, liked brands,
-  naming guidelines). Call with no args to load current preferences. The
+- **`brand_search_preferences`** — manages search config and creative
+  preferences: which services and domain tiers to check, plus keywords and
+  naming guidelines. Call with no args to load current preferences. The
   orchestrator respects service/domain preferences automatically. You should
   load creative preferences at the start of a brainstorming session to inform
   your name generation — these are the user's saved taste and style cues.
+
+- **Brand management tools** (`add_brand`, `update_brand`, `remove_brand`,
+  `list_brands`) — manage the user's saved brand names separately from
+  search preferences. Use `add_brand` to save a name with optional metadata
+  (available namespaces, tags, notes). Use `update_brand` to modify metadata
+  on individual brands after adding. Use `list_brands` to retrieve saved
+  brands with optional filters (by tag, available namespace, or name search).
+  Use `remove_brand` to delete brands the user no longer wants tracked.
 
 **Rule of thumb:** Use the orchestrator for initial sweeps, individual tools
 for drill-downs and iterations. When in doubt, prefer fewer tool calls — the
@@ -53,9 +61,12 @@ preferences. This gives you:
 - **Service config** — which availability checks to run
 - **Domain tiers** — which extensions matter and how much
 - **Keywords** — terms meaningful to the user (e.g. "fitness", "cloud")
-- **Liked brands** — names the user admires as style references
 - **Guidelines** — naming rules in the user's own words (e.g. "short Spanish
   words", "no weird misspellings", "must work as a CLI command")
+
+Also call `list_brands()` to load saved brands from prior sessions. These
+serve as style references and show what's already been researched. Check
+availability data on saved brands — unchecked namespaces may need follow-up.
 
 Use keywords and liked brands as creative fuel. Follow guidelines as
 constraints. If this is the user's first time, preferences will be defaults —

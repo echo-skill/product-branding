@@ -395,45 +395,74 @@ async def check_name_availability(
 # --- Preferences ---
 
 
+def _brand_name(item) -> str:
+    """Extract the name string from a liked_brands entry (str or dict)."""
+    if isinstance(item, dict):
+        return item.get("name", "")
+    return item
+
+
+def _normalize_brand(item) -> dict:
+    """Ensure a liked_brands entry is in dict form.
+
+    Migrates old formats:
+      - Plain string "echoark" → {"name": "echoark"}
+      - Old available list ["github", ".com"] →
+        [{"type": "github", "status": "available"}, ...]
+    """
+    if isinstance(item, str):
+        return {"name": item}
+    # Migrate old-style available (list of strings) to new format
+    if "available" in item and item["available"] and isinstance(item["available"][0], str):
+        item["availability"] = [
+            {"type": ns, "status": "available"} for ns in item["available"]
+        ]
+        del item["available"]
+    return item
+
+
 @mcp.tool()
 async def brand_search_preferences(
     services: dict[str, bool] | None = None,
     domain_tiers: dict[str, list[str]] | None = None,
     add_keywords: list[str] | None = None,
     remove_keywords: list[str] | None = None,
-    add_liked_brands: list[str] | None = None,
-    remove_liked_brands: list[str] | None = None,
     add_guidelines: list[str] | None = None,
     remove_guidelines: list[str] | None = None,
 ) -> dict:
     """Get or update preferences for brand name availability searches.
 
-    Call with no arguments to see current preferences.
-    Each parameter updates only its own section — omitted sections are unchanged.
+    Call with no arguments to load all current preferences. Load preferences
+    at the start of any branding session to inform name generation and
+    availability checks.
+
+    Each parameter updates only its own section — omitted sections unchanged.
+
+    This tool manages search configuration and creative preferences (keywords,
+    guidelines). For managing saved brand names, use the dedicated brand tools:
+      - add_brand: Save a new brand with optional metadata
+      - update_brand: Modify metadata on an existing brand
+      - remove_brand: Delete a brand from the saved list
 
     Args:
-        services: Enable/disable services. Keys: domain, github_org, pypi,
-                  npm, crates, docker_hub, homebrew. Values: true/false.
+        services: Enable/disable services for availability sweeps.
+                  Keys: domain, github_org, pypi, npm, crates, docker_hub,
+                  homebrew. Values: true/false.
         domain_tiers: Categorize domain extensions by importance.
                       Keys: critical, nice_to_have, informational, ignore.
                       Values: lists of extensions (e.g. [".com", ".dev"]).
-        add_keywords: Keywords meaningful to the user for brainstorming
-                      (e.g. "fitness", "minimal", "cloud"). Appended to existing.
-        remove_keywords: Keywords to remove from the saved list.
-        add_liked_brands: Example brand names the user admires as inspiration
-                          (e.g. "Stripe", "Notion", "Rye"). Appended to existing.
-        remove_liked_brands: Liked brands to remove from the saved list.
-        add_guidelines: Naming style rules or preferences in the user's own words
-                        (e.g. "short Spanish words", "no weird misspellings",
-                        "must work as a CLI command"). Appended to existing.
-        remove_guidelines: Guidelines to remove from the saved list.
+        add_keywords: Brainstorming inspiration words. Appended, deduplicated.
+        remove_keywords: Keywords to remove.
+        add_guidelines: Naming rules that persist across sessions and guide
+                        name generation (e.g. "check both hyphenated and
+                        unhyphenated versions").
+        remove_guidelines: Guidelines to remove.
     """
     config = load_config()
 
     has_updates = any(v is not None for v in (
         services, domain_tiers,
         add_keywords, remove_keywords,
-        add_liked_brands, remove_liked_brands,
         add_guidelines, remove_guidelines,
     ))
 
@@ -445,18 +474,16 @@ async def brand_search_preferences(
     if domain_tiers is not None:
         config["domain_tiers"].update(domain_tiers)
 
-    # List field updates: add then remove, deduplicate
     creative = config["creative"]
+
     list_ops = [
         ("keywords", add_keywords, remove_keywords),
-        ("liked_brands", add_liked_brands, remove_liked_brands),
         ("guidelines", add_guidelines, remove_guidelines),
     ]
     for field, to_add, to_remove in list_ops:
         items = creative.get(field, [])
         if to_add:
             items.extend(to_add)
-            # Deduplicate preserving order
             seen = set()
             deduped = []
             for item in items:
@@ -471,6 +498,253 @@ async def brand_search_preferences(
 
     save_config(config)
     return {"preferences": config, "updated": True, "source": str(CONFIG_PATH)}
+
+
+@mcp.tool()
+async def add_brand(
+    name: str,
+    availability: list[dict] | None = None,
+    tags: list[str] | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Save a brand name to the liked brands list with optional metadata.
+
+    If a brand with the same name already exists, its metadata is merged
+    (new fields overwrite, existing fields not mentioned are preserved).
+
+    Args:
+        name: The brand name to save (e.g. "echoark").
+        availability: Checked namespaces with explicit status. Each entry:
+                      {"type": "<namespace>", "status": "<status>"}.
+                      type: "github", ".com", ".dev", ".io", ".ai", "pypi",
+                            "npm", "homebrew", etc.
+                      status: "available", "unavailable", or "unknown".
+                      Only include namespaces that have been checked. Absence
+                      of a namespace means it hasn't been checked at all.
+                      Example: [{"type": "github", "status": "available"},
+                                {"type": ".com", "status": "unavailable"}]
+        tags: Free-form labels for filtering and recall. Use for sentiment
+              ("liked", "favorite", "killed"), purpose ("dev-tools",
+              "ai-ecosystem"), or status ("finalist"). No fixed vocabulary.
+        notes: Free-text context about this brand.
+    """
+    config = load_config()
+    creative = config["creative"]
+    brands = [_normalize_brand(b) for b in creative.get("liked_brands", [])]
+
+    new_brand = {"name": name}
+    if availability is not None:
+        new_brand["availability"] = availability
+    if tags is not None:
+        new_brand["tags"] = tags
+    if notes is not None:
+        new_brand["notes"] = notes
+
+    existing = next((b for b in brands if _brand_name(b) == name), None)
+    if existing:
+        existing.update(new_brand)
+        brand = existing
+    else:
+        brands.append(new_brand)
+        brand = new_brand
+
+    creative["liked_brands"] = brands
+    save_config(config)
+    return {"brand": brand, "merged": existing is not None}
+
+
+@mcp.tool()
+async def remove_brand(
+    names: list[str],
+) -> dict:
+    """Remove one or more brands from the liked brands list.
+
+    Args:
+        names: Brand names to remove (matched exactly by name string).
+    """
+    config = load_config()
+    creative = config["creative"]
+    brands = [_normalize_brand(b) for b in creative.get("liked_brands", [])]
+
+    remove_set = set(names)
+    before_count = len(brands)
+    brands = [b for b in brands if _brand_name(b) not in remove_set]
+    removed_count = before_count - len(brands)
+
+    creative["liked_brands"] = brands
+    save_config(config)
+    return {"removed": removed_count, "remaining": len(brands)}
+
+
+def _availability_status(brand: dict, namespace: str) -> str | None:
+    """Get availability status for a namespace, or None if not checked."""
+    for entry in brand.get("availability", []):
+        if entry.get("type") == namespace:
+            return entry.get("status")
+    return None
+
+
+@mcp.tool()
+async def list_brands(
+    tag: str | None = None,
+    available_on: str | None = None,
+    unavailable_on: str | None = None,
+    unchecked_on: str | None = None,
+    search: str | None = None,
+) -> dict:
+    """List saved brands with optional filters.
+
+    Call with no arguments to list all saved brands. Filters can be combined
+    (AND logic — all conditions must match).
+
+    Args:
+        tag: Filter to brands that have this tag (e.g. "finalist",
+             "dev-tools", "killed").
+        available_on: Filter to brands where this namespace has status
+                      "available" (e.g. "github", ".com").
+        unavailable_on: Filter to brands where this namespace has status
+                        "unavailable".
+        unchecked_on: Filter to brands where this namespace has NOT been
+                      checked at all (not present in availability list).
+                      Useful for finding brands that need follow-up checks.
+        search: Substring match against brand name (case-insensitive).
+    """
+    config = load_config()
+    brands = [_normalize_brand(b) for b in
+              config.get("creative", {}).get("liked_brands", [])]
+
+    if tag:
+        brands = [b for b in brands if tag in b.get("tags", [])]
+    if available_on:
+        brands = [b for b in brands
+                  if _availability_status(b, available_on) == "available"]
+    if unavailable_on:
+        brands = [b for b in brands
+                  if _availability_status(b, unavailable_on) == "unavailable"]
+    if unchecked_on:
+        brands = [b for b in brands
+                  if _availability_status(b, unchecked_on) is None]
+    if search:
+        search_lower = search.lower()
+        brands = [b for b in brands if search_lower in _brand_name(b).lower()]
+
+    return {"brands": brands, "count": len(brands)}
+
+
+@mcp.tool()
+async def update_brand(
+    name: str,
+    tags: list[str] | None = None,
+    add_tags: list[str] | None = None,
+    remove_tags: list[str] | None = None,
+    notes: str | None = None,
+    add_comments: list[str] | None = None,
+    clear_fields: list[str] | None = None,
+) -> dict:
+    """Update tags, notes, or comments on a saved brand.
+
+    For availability changes, use update_brand_availability instead.
+
+    Args:
+        name: Brand name to update (must match an existing liked brand).
+        tags: Replace the full tags list. Free-form labels for filtering:
+              sentiment ("liked", "favorite", "killed"), purpose
+              ("dev-tools", "ai-ecosystem"), or status ("finalist").
+        add_tags: Append tags without replacing existing ones.
+        remove_tags: Remove specific tags.
+        notes: Set free-text notes (replaces previous value).
+        add_comments: Append one or more comments. Each is stored with a
+                      timestamp automatically.
+        clear_fields: Field names to remove entirely from this brand
+                      (e.g. ["tags", "notes"]). Cannot clear "name".
+    """
+    config = load_config()
+    creative = config["creative"]
+    brands = [_normalize_brand(b) for b in creative.get("liked_brands", [])]
+
+    brand = next((b for b in brands if _brand_name(b) == name), None)
+    if brand is None:
+        return {"error": f"Brand '{name}' not found in liked_brands. Add it first."}
+
+    if clear_fields:
+        for field in clear_fields:
+            if field != "name":
+                brand.pop(field, None)
+
+    if tags is not None:
+        brand["tags"] = tags
+    if add_tags:
+        existing_tags = brand.get("tags", [])
+        existing_tags.extend(add_tags)
+        brand["tags"] = list(dict.fromkeys(existing_tags))
+    if remove_tags:
+        brand["tags"] = [t for t in brand.get("tags", []) if t not in set(remove_tags)]
+    if notes is not None:
+        brand["notes"] = notes
+    if add_comments:
+        from datetime import datetime, timezone
+        comments = brand.get("comments", [])
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        for comment in add_comments:
+            comments.append(f"[{ts}] {comment}")
+        brand["comments"] = comments
+
+    creative["liked_brands"] = brands
+    save_config(config)
+    return {"brand": brand, "updated": True}
+
+
+@mcp.tool()
+async def update_brand_availability(
+    name: str,
+    entries: list[dict],
+    reset: bool = False,
+) -> dict:
+    """Set or merge availability data on a saved brand.
+
+    Each entry records whether a namespace is available, unavailable, or
+    unknown. Namespaces not mentioned are left unchanged (unless reset=True).
+
+    Availability uses three-state semantics:
+      - "available": confirmed open, can be registered now.
+      - "unavailable": confirmed taken.
+      - "unknown": checked but result was ambiguous (e.g. whois timeout).
+      - Not in list at all: never checked — distinct from all three above.
+
+    Args:
+        name: Brand name to update (must match an existing liked brand).
+        entries: Namespace availability entries. Each is a dict with:
+                 "type" (e.g. "github", ".com", ".ai", "pypi") and
+                 "status" ("available", "unavailable", or "unknown").
+                 Entries for types already present are overwritten;
+                 new types are appended.
+        reset: If true, replace all existing availability with entries.
+               If false (default), merge entries into existing data.
+    """
+    config = load_config()
+    creative = config["creative"]
+    brands = [_normalize_brand(b) for b in creative.get("liked_brands", [])]
+
+    brand = next((b for b in brands if _brand_name(b) == name), None)
+    if brand is None:
+        return {"error": f"Brand '{name}' not found in liked_brands. Add it first."}
+
+    if reset:
+        brand["availability"] = entries
+    else:
+        existing = brand.get("availability", [])
+        for entry in entries:
+            ns_type = entry["type"]
+            found = next((e for e in existing if e["type"] == ns_type), None)
+            if found:
+                found["status"] = entry["status"]
+            else:
+                existing.append(entry)
+        brand["availability"] = existing
+
+    creative["liked_brands"] = brands
+    save_config(config)
+    return {"brand": brand, "updated": True}
 
 
 if __name__ == "__main__":
